@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.idea/
+.vscode/
+output/*.csv
+dist/
+build/
+*.py[cod]
+.mypy_cache/
+*.egg-info/
+
+
+# Local simulation outputs (recreated by runs)
+stream_*.csv
+elevator_positions.csv
+*_positions.csv
+passenger_journey.csv
+*_journey.csv
