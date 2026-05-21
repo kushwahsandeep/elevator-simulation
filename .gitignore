@@ -1,20 +1,91 @@
-__pycache__/
-*.pyc
-.pytest_cache/
+# --- Python (clone → scripts/setup.* creates .venv & installs deps) ---
 .venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+pip-wheel-metadata/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Packaging / wheels (repo root — not web UI)
+/dist/
+/build/
+*.whl
+
+# Tests & typing
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+coverage.xml
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+pytestdebug.log
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# --- Node / React UI (clone → scripts/setup-web.* → web/dist/) ---
+web/node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+
+# --- Environment & secrets (never commit real credentials) ---
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# --- IDEs & local tooling ---
 .idea/
 .vscode/
-output/*.csv
-dist/
-build/
-*.py[cod]
-.mypy_cache/
-*.egg-info/
+*.suo
+*.user
+*.swp
+*.swo
+*~
+.cursor/
 
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
 
-# Local simulation outputs (recreated by runs)
+# --- Logs & scratch ---
+*.log
+tmp/
+temp/
+*.tmp
+
+# Local simulation outputs (recreated by CLI/API runs)
 stream_*.csv
 elevator_positions.csv
 *_positions.csv
 passenger_journey.csv
 *_journey.csv
+
+# TLS / PEM / certs / keys (never commit secrets or corp trust bundles)
+*.pem
+*.crt
+*.cer
+*.csr
+*.key
+*.p12
+*.pfx
+**/certs/
+**/certificates/
+**/ssl/

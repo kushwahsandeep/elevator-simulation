@@ -4,10 +4,10 @@ import logging
 import random
 import sys
 import time
-from typing import Callable, List, Optional, TextIO
+from collections import defaultdict, deque
+from typing import List, Optional, TextIO
 
-from .models import Elevator, RequestInput, SimulationConfig, Passenger
-from .scheduler import NearestCar
+from .models import Elevator, Passenger, RequestInput, SimulationConfig
 from .simulation import (
     SimulationResult,
     format_position_log_header,
@@ -85,7 +85,6 @@ def run_streaming_until_interrupt(
     rng: random.Random,
     arrival_probability: float,
     max_new_per_tick: int,
-    assign: Optional[Callable[[RequestInput, List[Elevator]], int]] = None,
     position_log_path: Optional[str] = None,
     request_journal_path: Optional[str] = None,
     tick_out: Optional[TextIO] = None,
@@ -95,7 +94,7 @@ def run_streaming_until_interrupt(
     sleep_seconds_per_new_request: float = 0.0,
 ) -> SimulationResult:
     """Run until Ctrl+C (stop generating), then simulate until everyone is dropped off."""
-    assign_fn = assign or NearestCar().assign
+
     elevators = [
         Elevator(
             idx=i,
@@ -107,6 +106,8 @@ def run_streaming_until_interrupt(
         for i in range(config.num_elevators)
     ]
     passengers: List[Passenger] = []
+    landing_queues: dict[int, deque[Passenger]] = defaultdict(deque)
+    dispatcher_rr: List[int] = [0]
     log_lines: List[str] = []
     journal_lines: Optional[List[str]] = [] if request_journal_path else None
     id_counter = [0]
@@ -166,9 +167,10 @@ def run_streaming_until_interrupt(
                 config,
                 elevators,
                 passengers,
+                landing_queues,
+                dispatcher_rr,
                 t,
                 incoming,
-                assign_fn,
                 log_lines,
                 request_journal_lines=journal_lines,
             )

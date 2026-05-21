@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--log-level",
         default="INFO",
-        help="Python log level: DEBUG, INFO, WARNING, … (default INFO)",
+        help="Python log level: DEBUG, INFO, WARNING, ... (default INFO)",
     )
     p.add_argument("--seed", type=int, default=None, help="RNG seed for --stream")
     p.add_argument(
@@ -111,16 +111,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Stress: random arrivals every *simulation tick* (uses --arrival-p / --max-per-tick; can create huge logs).",
     )
     p.add_argument(
-        "--wait-first-inject",
-        action="store_true",
-        help="With --stream paced: skip injection at tick 0; first new passenger at tick --inject-every-ticks.",
+        "--assignment-strategy",
+        default="nearest",
+        choices=["nearest", "round_robin", "score_based"],
+        help="Hall->car dispatcher: nearest (min distance, tie-break car index), round_robin, or score_based",
     )
     p.add_argument(
         "--sleep-after-request",
         type=float,
         default=0.0,
         help="With --stream only: real-time seconds to sleep after each *new* passenger is added "
-        "(total sleep = value × number of passengers added that tick). Default 0 (full speed). Demo only.",
+        "(total sleep = value x number of passengers added that tick). Default 0 (full speed). Demo only.",
     )
     args = p.parse_args(argv)
 
@@ -136,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         num_elevators=args.elevators,
         max_passengers=args.capacity,
         initial_floor=args.initial_floor,
+        assignment_strategy=args.assignment_strategy,
     )
     if args.stream:
         rng = random.Random(args.seed)
@@ -155,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             tick_out=sys.stdout if args.print_ticks else None,
             inject_every_ticks=args.inject_every_ticks,
             burst_stream=args.burst_stream,
-            skip_first_tick=args.wait_first_inject,
+            skip_first_tick=False,
             sleep_seconds_per_new_request=args.sleep_after_request,
         )
         print_summary(result.passengers)
@@ -184,7 +186,10 @@ def main(argv: list[str] | None = None) -> int:
     out_csv = prepare_positions_csv(args.positions_log)
     journey_csv = None if args.no_request_log else prepare_requests_journal_csv(args.request_log)
     result = run_simulation_to_files(
-        config, load_requests_from_csv(args.requests_csv), out_csv, request_journal_path=journey_csv
+        config,
+        load_requests_from_csv(args.requests_csv),
+        out_csv,
+        request_journal_path=journey_csv,
     )
     print_summary(result.passengers)
     print(f"Wrote position CSV (absolute): {Path(out_csv).resolve()}", file=sys.stdout)
