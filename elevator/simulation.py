@@ -2,20 +2,13 @@ from __future__ import annotations
 
 import csv
 import logging
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from io import StringIO
-from typing import Callable, List, Optional, Sequence, TextIO, Tuple
+from typing import Dict, List, Optional, Sequence, TextIO, Tuple
 
 from .models import Elevator, Passenger, RequestInput, SimulationConfig
-from .movement import (
-    move_one_floor,
-    scan_next_target,
-    stop_floors_for_elevator,
-    update_direction_after_move,
-)
-from .scheduler import NearestCar
-
+from .movement import move_elevators
 logger = logging.getLogger(__name__)
 
 
@@ -76,10 +69,39 @@ def _request_journal_row(
     return buf.getvalue()
 
 
+def _passenger_requests_trip_up(p: Passenger) -> bool:
+    """True when dest > source — \"up\" in the UI."""
+    return p.request.dest > p.request.source
+
+
+def _pickup_matches_lift_direction(p: Passenger, lift_direction: int) -> bool:
+    """Idle accepts any passenger. Moving up blocks only down-bound trips."""
+    if lift_direction == 0:
+        return True
+    # Up-bound shafts pass down-trip waiters until direction idles/reverses; do not strand
+    # up-trips arriving on a descending car after it stops at their landing floor.
+    if lift_direction > 0 and not _passenger_requests_trip_up(p):
+        return False
+    return True
+
+
+def _pickup_matches_cabin_trip_mix(p: Passenger, onboard: Dict[str, Passenger]) -> bool:
+    """Non-empty cabin only boards passengers whose declared trip matches existing occupants."""
+    if not onboard:
+        return True
+    cabin_up = _passenger_requests_trip_up(next(iter(onboard.values())))
+    return _passenger_requests_trip_up(p) == cabin_up
+
+
+def _pickup_allowed_at_floor(p: Passenger, el: Elevator) -> bool:
+    return _pickup_matches_lift_direction(p, el.direction) and _pickup_matches_cabin_trip_mix(p, el.onboard)
+
+
 def service_elevator(
     el: Elevator,
     tick: int,
     max_passengers: int,
+    landing_queues: dict[int, deque[Passenger]],
     request_journal_lines: Optional[List[str]] = None,
 ) -> None:
     f = el.floor
@@ -122,39 +144,53 @@ def service_elevator(
                 )
             )
 
-    q = el.waiting.get(f)
+    # Shared landing queue; scan with rotation so a wrong-direction head does not block.
+    q = landing_queues.get(f)
     while q and len(el.onboard) < max_passengers:
-        p = q.popleft()
-        if not q:
-            el.waiting.pop(f, None)
-        p.picked_up_at = tick
-        el.onboard[p.request.passenger_id] = p
-        w = p.picked_up_at - p.request.time
-        logger.info(
-            "tick=%s event=PICKUP elevator=%s floor=%s passenger=%s dest=%s wait=%s",
-            tick,
-            el.idx,
-            f,
-            p.request.passenger_id,
-            p.request.dest,
-            w,
-        )
-        if request_journal_lines is not None:
-            request_journal_lines.append(
-                _request_journal_row(
-                    tick,
-                    "PICKUP",
-                    p.request.passenger_id,
-                    p.request.time,
-                    p.request.source,
-                    p.request.dest,
-                    el.idx,
-                    str(w),
-                    "",
-                    "",
-                    "ONBOARD",
-                )
+        n = len(q)
+        picked_one = False
+        for _ in range(n):
+            if not q:
+                break
+            if not _pickup_allowed_at_floor(q[0], el):
+                q.rotate(-1)
+                continue
+            p = q.popleft()
+            if not q:
+                landing_queues.pop(f, None)
+            p.picked_up_at = tick
+            p.assigned_elevator = el.idx
+            el.onboard[p.request.passenger_id] = p
+            w = p.picked_up_at - p.request.time
+            logger.info(
+                "tick=%s event=PICKUP elevator=%s floor=%s passenger=%s dest=%s wait=%s",
+                tick,
+                el.idx,
+                f,
+                p.request.passenger_id,
+                p.request.dest,
+                w,
             )
+            if request_journal_lines is not None:
+                request_journal_lines.append(
+                    _request_journal_row(
+                        tick,
+                        "PICKUP",
+                        p.request.passenger_id,
+                        p.request.time,
+                        p.request.source,
+                        p.request.dest,
+                        el.idx,
+                        str(w),
+                        "",
+                        "",
+                        "ONBOARD",
+                    )
+                )
+            picked_one = True
+            break
+        if not picked_one:
+            break
 
 
 def _format_position_row(tick: int, elevators: Sequence[Elevator]) -> str:
@@ -162,41 +198,14 @@ def _format_position_row(tick: int, elevators: Sequence[Elevator]) -> str:
     return f"{tick},{floors}"
 
 
-def move_elevators(elevators: List[Elevator], max_passengers: int) -> None:
-    for el in elevators:
-        stops = stop_floors_for_elevator(el, max_passengers)
-        if not stops:
-            el.direction = 0
-            continue
-        if el.direction == 0:
-            t_up = scan_next_target(el.floor, stops, 1)
-            t_dn = scan_next_target(el.floor, stops, -1)
-            assert t_up is not None and t_dn is not None
-            du = abs(t_up - el.floor)
-            dd = abs(t_dn - el.floor)
-            if du < dd or (du == dd and t_up >= el.floor):
-                el.direction = 1 if t_up >= el.floor else -1
-            else:
-                el.direction = -1 if t_dn <= el.floor else 1
-
-        target = scan_next_target(el.floor, stops, el.direction)
-        assert target is not None
-        new_floor, _ = move_one_floor(el.floor, target)
-        el.floor = new_floor
-        stops_after = stop_floors_for_elevator(el, max_passengers)
-        if stops_after:
-            el.direction = update_direction_after_move(new_floor, stops_after, el.direction)
-        else:
-            el.direction = 0
-
-
 def simulate_one_tick(
     config: SimulationConfig,
     elevators: List[Elevator],
     passengers: List[Passenger],
+    landing_queues: dict[int, deque[Passenger]],
+    dispatcher_rr: List[int],
     t: int,
     incoming: Sequence[RequestInput],
-    assign_fn: Callable[[RequestInput, List[Elevator]], int],
     log_lines: List[str],
     request_journal_lines: Optional[List[str]] = None,
 ) -> None:
@@ -208,16 +217,13 @@ def simulate_one_tick(
             raise ValueError(
                 f"incoming request {req.passenger_id!r} has time={req.time} but tick is {t}"
             )
-        e_idx = assign_fn(req, elevators)
-        if not 0 <= e_idx < len(elevators):
-            raise ValueError("assign() returned invalid elevator index")
-        p = Passenger(req, e_idx)
+        # Shared landing queue (bank): any elevator with spare capacity may stop and pick up.
+        p = Passenger(req, -1)
         passengers.append(p)
-        elevators[e_idx].waiting.setdefault(req.source, deque()).append(p)
+        landing_queues.setdefault(req.source, deque()).append(p)
         logger.info(
-            "tick=%s event=ASSIGN elevator=%s passenger=%s src=%s dest=%s queue_floor=%s",
+            "tick=%s event=ASSIGN_TO_LANDING passenger=%s src=%s dest=%s queue_floor=%s",
             t,
-            e_idx,
             req.passenger_id,
             req.source,
             req.dest,
@@ -232,7 +238,7 @@ def simulate_one_tick(
                     req.time,
                     req.source,
                     req.dest,
-                    e_idx,
+                    -1,
                     "",
                     "",
                     "",
@@ -241,9 +247,15 @@ def simulate_one_tick(
             )
 
     for el in elevators:
-        service_elevator(el, t, config.max_passengers, request_journal_lines)
+        service_elevator(el, t, config.max_passengers, landing_queues, request_journal_lines)
 
-    move_elevators(elevators, config.max_passengers)
+    move_elevators(
+        elevators,
+        config.max_passengers,
+        landing_queues,
+        config.assignment_strategy,
+        dispatcher_rr,
+    )
 
     log_lines.append(_format_position_row(t, elevators))
 
@@ -251,19 +263,17 @@ def simulate_one_tick(
 def simulate_elevator_system(
     requests: Sequence[RequestInput],
     config: SimulationConfig,
-    assign: Callable[[RequestInput, List[Elevator]], int] | None = None,
 ) -> SimulationResult:
     """Discrete simulation from a list of :class:`RequestInput` rows and config."""
-    return run_simulation(config, requests, assign=assign)
+    return run_simulation(config, requests)
 
 
 def run_simulation(
     config: SimulationConfig,
     requests: Sequence[RequestInput],
-    assign: Callable[[RequestInput, List[Elevator]], int] | None = None,
 ) -> SimulationResult:
-    """Advance one tick at a time: assign -> service/move -> snapshot."""
-    assign_fn = assign or NearestCar().assign
+    """Advance one tick: arrivals to landing queues, pickup/drop, move, snapshot."""
+
     sorted_req = sorted(requests, key=lambda r: (r.time, r.passenger_id))
     seen_ids: set[str] = set()
     for r in sorted_req:
@@ -288,6 +298,8 @@ def run_simulation(
     log_lines: List[str] = []
     journey: List[str] = []
 
+    landing_queues: dict[int, deque[Passenger]] = defaultdict(deque)
+    dispatcher_rr: List[int] = [0]
     t = 0
     while True:
         incoming: List[RequestInput] = []
@@ -299,9 +311,10 @@ def run_simulation(
             config,
             elevators,
             passengers,
+            landing_queues,
+            dispatcher_rr,
             t,
             incoming,
-            assign_fn,
             log_lines,
             request_journal_lines=journey,
         )

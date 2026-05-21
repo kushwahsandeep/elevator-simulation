@@ -5,12 +5,18 @@ from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional
 
 
+_ASSIGNMENT_STRATEGIES = frozenset({"nearest", "round_robin", "score_based"})
+
+
 @dataclass(frozen=True)
 class SimulationConfig:
+    """Discrete simulation parameters (``assignment_strategy`` selects hall→car dispatch each tick)."""
+
     num_floors: int
     num_elevators: int
     max_passengers: int
     initial_floor: int = 1
+    assignment_strategy: str = "nearest"
 
     def __post_init__(self) -> None:
         if self.num_floors < 1:
@@ -21,6 +27,13 @@ class SimulationConfig:
             raise ValueError("max_passengers must be >= 1")
         if not 1 <= self.initial_floor <= self.num_floors:
             raise ValueError("initial_floor must be in [1, num_floors]")
+        ak = self.assignment_strategy.strip().lower().replace("-", "_")
+        if ak == "score":
+            ak = "score_based"
+        if ak not in _ASSIGNMENT_STRATEGIES:
+            allowed = ", ".join(sorted(_ASSIGNMENT_STRATEGIES))
+            raise ValueError(f"assignment_strategy must be one of {allowed}")
+        object.__setattr__(self, "assignment_strategy", ak)
 
 
 @dataclass(frozen=True)
